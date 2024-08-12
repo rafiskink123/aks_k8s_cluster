@@ -1,22 +1,59 @@
-- stage: Build
-  displayName: Build stage
-  jobs:  
-  - job: Build
-    displayName: Build job
-    pool:
-      vmImage: $(vmImageName)
-    steps:
-    - task: Docker@2
-      displayName: Build and push an image to container registry
-      inputs:
-        command: buildAndPush
-        repository: $(imageRepository)
-        dockerfile: $(dockerfilePath)
-        containerRegistry: $(dockerRegistryServiceConnection)
-        tags: |
-          $(tag)
+trigger:
+- main
 
-    - task: PublishPipelineArtifact@1
+variables:
+  # Define variables
+  RESOURCE_GROUP: 'yourResourceGroup'
+  AKS_CLUSTER_NAME: 'yourAksClusterName'
+  NAMESPACE: 'yourNamespace'
+  LOCATION: 'eastus'
+  ACR_NAME: 'yourAcrName'
+
+stages:
+- stage: DeployAKS
+  jobs:
+  - job: CreateAKS
+    displayName: 'Create AKS Cluster'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - checkout: self
+
+    - task: AzureCLI@2
       inputs:
-        artifactName: 'manifests'
-        path: 'manifests'
+        azureSubscription: '<yourAzureSubscription>'
+        scriptType: 'bash'
+        scriptLocation: 'inlineScript'
+        inlineScript: |
+          # Create a Resource Group
+          az group create --name $(RESOURCE_GROUP) --location $(LOCATION)
+
+          # Create an AKS Cluster
+          az aks create --resource-group $(RESOURCE_GROUP) --name $(AKS_CLUSTER_NAME) --node-count 1 --enable-addons monitoring --generate-ssh-keys --attach-acr $(ACR_NAME)
+          
+          # Get credentials for AKS
+          az aks get-credentials --resource-group $(RESOURCE_GROUP) --name $(AKS_CLUSTER_NAME)
+
+          # Create a namespace
+          kubectl create namespace $(NAMESPACE)
+
+- stage: DeployApp
+  dependsOn: DeployAKS
+  jobs:
+  - job: DeployToAKS
+    displayName: 'Deploy Application to AKS'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - checkout: self
+
+    - task: Kubernetes@1
+      inputs:
+        connectionType: 'Azure Resource Manager'
+        azureSubscriptionEndpoint: '<yourAzureSubscription>'
+        azureResourceGroup: $(RESOURCE_GROUP)
+        kubernetesCluster: $(AKS_CLUSTER_NAME)
+        namespace: $(NAMESPACE)
+        command: 'apply'
+        useConfigurationFile: true
+        configuration: '$(System.DefaultWorkingDirectory)/manifests/deployment.yaml'
